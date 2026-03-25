@@ -1,12 +1,12 @@
-version: "3.9"
-
 services:
 
   db:
     image: mysql:8
     container_name: smart_db
     restart: always
-    env_file: .env
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: smart_classroom
     ports:
       - "3307:3306"
     volumes:
@@ -24,12 +24,5 @@ services:
   ai-service:
     build: ./ai-service
     container_name: ai_service
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     ports:
       - "8002:8000"
