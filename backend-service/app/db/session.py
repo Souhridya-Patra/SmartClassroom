@@ -1,19 +1,25 @@
-import time
 import mysql.connector
+from mysql.connector import pooling
 from app.core.config import settings
 
+pool = None
+
+def get_pool():
+    global pool
+    if pool is None:
+        pool = pooling.MySQLConnectionPool(
+            pool_name="smart_classroom_pool",
+            pool_size=5,
+            host=settings.DB_HOST,
+            user=settings.DB_USER,
+            password=settings.DB_PASSWORD,
+            database=settings.DB_NAME
+        )
+    return pool
+
 def get_connection():
-    for i in range(10):
-        try:
-            conn = mysql.connector.connect(
-                host=settings.DB_HOST,
-                user=settings.DB_USER,
-                password=settings.DB_PASSWORD,
-                database=settings.DB_NAME
-            )
-            print("✅ Connected to MySQL")
-            return conn
-        except Exception as e:
-            print(f"⏳ DB not ready... retrying ({i+1}/10)")
-            time.sleep(3)
-    raise Exception("❌ Could not connect to MySQL")
+    conn = get_pool().get_connection()
+    try:
+        yield conn
+    finally:
+        conn.close()

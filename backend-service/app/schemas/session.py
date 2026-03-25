@@ -12,8 +12,7 @@ class Session(SessionBase):
     id: int
     end_time: datetime = None
 
-    class Config:
-        orm_mode = True
+    model_config = {"from_attributes": True}
 
 class SessionStart(BaseModel):
     professor_id: int
