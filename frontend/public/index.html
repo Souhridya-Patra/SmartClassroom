@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SmartClassroom Control Deck</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="bg-shape bg-shape-a"></div>
+  <div class="bg-shape bg-shape-b"></div>
+
+  <main class="app-shell">
+    <header class="hero">
+      <p class="eyebrow">SmartClassroom</p>
+      <h1>Control Deck</h1>
+      <p class="subhead">Live service health, student enrollment, classroom recognition, and attendance telemetry from one panel.</p>
+      <button id="refreshAll" class="btn btn-primary">Refresh Live Status</button>
+    </header>
+
+    <section class="health-grid">
+      <article class="card health-card">
+        <h2>Backend</h2>
+        <p id="backendStatus" class="status-pill status-loading">Loading</p>
+        <pre id="backendPayload" class="payload"></pre>
+      </article>
+
+      <article class="card health-card">
+        <h2>Database</h2>
+        <p id="dbStatus" class="status-pill status-loading">Loading</p>
+        <pre id="dbPayload" class="payload"></pre>
+      </article>
+
+      <article class="card health-card">
+        <h2>AI Service</h2>
+        <p id="aiStatus" class="status-pill status-loading">Loading</p>
+        <pre id="aiPayload" class="payload"></pre>
+      </article>
+
+      <article class="card health-card">
+        <h2>Recommended Thresholds</h2>
+        <p id="tuningStatus" class="status-pill status-loading">Loading</p>
+        <pre id="tuningPayload" class="payload"></pre>
+      </article>
+    </section>
+
+    <section class="actions-grid">
+      <article class="card action-card">
+        <h2>Camera Enrollment (Metadata Only)</h2>
+        <p class="helper">Capture multiple angles from live video. Only 512D embeddings are stored, never raw photos.</p>
+        <div class="camera-wrap">
+          <video id="liveVideo" autoplay playsinline muted></video>
+          <canvas id="captureCanvas" width="640" height="480" hidden></canvas>
+        </div>
+        <div class="inline-actions">
+          <button id="startCamera" class="btn btn-accent" type="button">Start Camera</button>
+          <button id="stopCamera" class="btn btn-ghost" type="button">Stop Camera</button>
+        </div>
+
+        <form id="cameraEnrollForm">
+          <label>Student ID</label>
+          <input id="cameraStudentId" type="text" placeholder="S301" required />
+          <label>Frames / Angles</label>
+          <input id="enrollShots" type="number" min="3" max="12" step="1" value="5" required />
+          <button class="btn btn-primary" type="submit">Capture Angles and Enroll</button>
+        </form>
+        <pre id="cameraEnrollOutput" class="payload"></pre>
+      </article>
+
+      <article class="card action-card">
+        <h2>Live Recognition from Video</h2>
+        <p class="helper">Streams frames from webcam at a fixed interval and forwards detected identities to attendance backend.</p>
+        <label>Decision Threshold</label>
+        <input id="thresholdInput" type="number" min="0" max="1" step="0.01" value="0.60" required />
+        <label>Recognition Interval (ms)</label>
+        <input id="loopInterval" type="number" min="500" max="5000" step="100" value="1200" required />
+        <div class="inline-actions">
+          <button id="startLiveRecognition" class="btn btn-accent" type="button">Start Live Recognition</button>
+          <button id="stopLiveRecognition" class="btn btn-ghost" type="button">Stop Live Recognition</button>
+          <button id="runSingleFrame" class="btn btn-ghost" type="button">Run Single Frame</button>
+        </div>
+        <pre id="recognizeOutput" class="payload"></pre>
+      </article>
+
+      <article class="card action-card">
+        <h2>Recognition Pipeline</h2>
+        <ul class="meta-list">
+          <li>Face detection: MTCNN for aligned face tensors.</li>
+          <li>Embedding: FaceNet to 512D vector on CUDA when available.</li>
+          <li>Matching: cosine similarity against registered embeddings in memory/file metadata.</li>
+          <li>Formula: cos(theta) = (A dot B) / (|A| * |B|), where A and B are 512D vectors.</li>
+          <li>Decision: similarity &gt; 0.60 is positive identity match.</li>
+          <li>Storage policy: no student photos are persisted by this system.</li>
+        </ul>
+      </article>
+    </section>
+
+    <section class="card telemetry-card">
+      <div class="telemetry-head">
+        <h2>Attendance Telemetry</h2>
+        <button id="refreshAttendance" class="btn btn-ghost">Refresh Events</button>
+      </div>
+
+      <div class="stats-row">
+        <div class="stat-box">
+          <p class="stat-label">Total Events</p>
+          <p id="totalEvents" class="stat-value">-</p>
+        </div>
+        <div class="stat-box">
+          <p class="stat-label">Unique Students</p>
+          <p id="uniqueStudents" class="stat-value">-</p>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Student ID</th>
+              <th>Similarity</th>
+              <th>Confidence</th>
+              <th>Source</th>
+              <th>Event Time</th>
+            </tr>
+          </thead>
+          <tbody id="attendanceRows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>

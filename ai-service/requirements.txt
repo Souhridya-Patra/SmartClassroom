@@ -1,6 +1,8 @@
 fastapi
 uvicorn
-torch
-torchvision
-facenet-pytorch
+facenet-pytorch==2.5.3
 opencv-python-headless
+python-multipart
+numpy<2
+Pillow
+requests
