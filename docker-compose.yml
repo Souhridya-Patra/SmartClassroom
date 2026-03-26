@@ -18,9 +18,8 @@ services:
   backend-service:
     build: ./backend-service
     container_name: backend
-    depends_on:
-      db:
-        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     env_file: .env
     ports:
       - "8001:8000"
@@ -36,6 +35,8 @@ services:
     depends_on:
       backend-service:
         condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     env_file: .env
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]

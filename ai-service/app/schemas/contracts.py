@@ -26,6 +26,9 @@ class RecognitionItem(BaseModel):
     student_id: str | None
     similarity: float
     confidence: float
+    bbox: list[float] | None = None
+    landmarks: list[list[float]] | None = None
+    pose_hint: str | None = None
 
 
 class RecognizeResponse(BaseModel):

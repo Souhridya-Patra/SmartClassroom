@@ -6,3 +6,4 @@ python-multipart
 numpy<2
 Pillow
 requests
+mysql-connector-python==9.6.0

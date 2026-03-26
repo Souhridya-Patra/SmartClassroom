@@ -6,7 +6,8 @@ from mysql.connector import Error
 
 
 def get_connection(max_retries: int = 10, retry_delay_seconds: int = 2):
-    host = os.getenv("DB_HOST", "db")
+    host = os.getenv("DB_HOST", "host.docker.internal")
+    port = int(os.getenv("DB_PORT", "3306"))
     user = os.getenv("DB_USER", "root")
     password = os.getenv("DB_PASSWORD", "")
     database = os.getenv("DB_NAME", "smart_classroom")
@@ -16,6 +17,7 @@ def get_connection(max_retries: int = 10, retry_delay_seconds: int = 2):
         try:
             connection = mysql.connector.connect(
                 host=host,
+                port=port,
                 user=user,
                 password=password,
                 database=database,

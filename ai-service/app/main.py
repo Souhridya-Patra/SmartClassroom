@@ -8,6 +8,11 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 
 from app.core.settings import (
     BACKEND_SERVICE_URL,
+    DB_HOST,
+    DB_NAME,
+    DB_PASSWORD,
+    DB_PORT,
+    DB_USER,
     DEVICE,
     EMBEDDINGS_FILE,
     FORWARD_ATTENDANCE,
@@ -21,13 +26,20 @@ from app.schemas.contracts import (
     RegisterResponse,
     TuningResponse,
 )
-from app.services.embedding_store import EmbeddingStore
+from app.services.db_embedding_store import DBEmbeddingStore
 from app.services.face_engine import FaceEngine
 from app.services.image_io import decode_image_bytes
 
 app = FastAPI(title="SmartClassroom AI Service", version="0.1.0")
 
-store = EmbeddingStore(EMBEDDINGS_FILE)
+store = DBEmbeddingStore(
+    db_host=DB_HOST,
+    db_port=DB_PORT,
+    db_user=DB_USER,
+    db_password=DB_PASSWORD,
+    db_name=DB_NAME,
+    json_fallback=EMBEDDINGS_FILE,
+)
 engine: FaceEngine | None = None
 engine_error: str | None = None
 _engine_lock = threading.Lock()
@@ -96,6 +108,35 @@ def _forward_to_backend(matches: Sequence[RecognitionItem]) -> bool:
         return 200 <= response.status_code < 300
     except Exception:
         return False
+
+
+def _pose_hint_from_landmarks(landmarks: np.ndarray | None) -> str | None:
+    if landmarks is None or len(landmarks) < 5:
+        return None
+
+    left_eye = landmarks[0]
+    right_eye = landmarks[1]
+    nose = landmarks[2]
+    mouth_left = landmarks[3]
+    mouth_right = landmarks[4]
+
+    eye_center = (left_eye + right_eye) / 2.0
+    mouth_center = (mouth_left + mouth_right) / 2.0
+    face_height = max(1.0, float(mouth_center[1] - eye_center[1]))
+    face_width = max(1.0, float(np.linalg.norm(right_eye - left_eye)))
+
+    horizontal_offset = float((nose[0] - eye_center[0]) / face_width)
+    vertical_offset = float((nose[1] - eye_center[1]) / face_height)
+
+    if horizontal_offset > 0.20:
+        return "look_right"
+    if horizontal_offset < -0.20:
+        return "look_left"
+    if vertical_offset > 0.70:
+        return "look_down"
+    if vertical_offset < 0.35:
+        return "look_up"
+    return "center"
 
 
 @app.get("/", response_model=HealthResponse)
@@ -167,6 +208,34 @@ async def register_student_batch(student_id: str, images: list[UploadFile] = Fil
     )
 
 
+@app.post("/enroll-face")
+async def enroll_face(image: UploadFile = File(...)):
+    """Enroll a face without a student_id (for faculty registration). Returns a unique face_identity_id."""
+    model = _require_engine()
+
+    raw = await image.read()
+    frame = decode_image_bytes(raw)
+    faces = model.detect_faces(frame)
+    if faces is None or len(faces) == 0:
+        raise HTTPException(status_code=422, detail="No face detected in image")
+
+    embedding = model.embedding(faces[0])
+    
+    # Generate a unique face identity ID for faculty
+    import uuid
+    face_identity_id = f"FACE-{uuid.uuid4().hex[:12].upper()}"
+    
+    # Store the face embedding with generated ID
+    samples = store.register(student_id=face_identity_id, embedding=embedding)
+    
+    return {
+        "face_identity_id": face_identity_id,
+        "samples": samples,
+        "message": "Face enrolled successfully",
+        "status": "success",
+    }
+
+
 @app.post("/recognize", response_model=RecognizeResponse)
 async def recognize(
     image: UploadFile = File(...),
@@ -183,7 +252,7 @@ async def recognize(
 
     raw = await image.read()
     frame = decode_image_bytes(raw)
-    faces = model.detect_faces(frame)
+    faces, boxes, landmarks = model.detect_faces_with_boxes(frame)
     if faces is None or len(faces) == 0:
         return RecognizeResponse(
             matches=[],
@@ -200,7 +269,7 @@ async def recognize(
 
     query_vectors = model.embeddings(faces)
     matches: list[RecognitionItem] = []
-    for query in query_vectors:
+    for index, query in enumerate(query_vectors):
         best_id = None
         best_score = -1.0
 
@@ -214,11 +283,34 @@ async def recognize(
         if best_score < threshold_value:
             best_id = None
 
+        bbox = None
+        if boxes is not None and index < len(boxes):
+            box = boxes[index]
+            bbox = [
+                round(float(box[0]), 1),
+                round(float(box[1]), 1),
+                round(float(box[2]), 1),
+                round(float(box[3]), 1),
+            ]
+
+        points = None
+        pose_hint = None
+        if landmarks is not None and index < len(landmarks):
+            point_set = landmarks[index]
+            points = [
+                [round(float(point[0]), 1), round(float(point[1]), 1)]
+                for point in point_set
+            ]
+            pose_hint = _pose_hint_from_landmarks(point_set)
+
         matches.append(
             RecognitionItem(
                 student_id=best_id,
                 similarity=round(best_score, 4),
                 confidence=round(confidence, 4),
+                bbox=bbox,
+                landmarks=points,
+                pose_hint=pose_hint,
             )
         )
 

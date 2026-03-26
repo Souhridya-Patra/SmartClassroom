@@ -15,15 +15,48 @@ class FaceEngine:
         self.encoder = InceptionResnetV1(pretrained="vggface2").eval().to(self.device)
 
     def detect_faces(self, bgr_image: np.ndarray) -> torch.Tensor | None:
+        faces, _, _ = self.detect_faces_with_boxes(bgr_image)
+        return faces
+
+    def detect_faces_with_boxes(self, bgr_image: np.ndarray) -> tuple[torch.Tensor | None, np.ndarray | None, np.ndarray | None]:
         rgb = bgr_image[:, :, ::-1]
         pil_image = Image.fromarray(rgb)
-        faces = self.detector(pil_image)
+
+        boxes, probabilities, landmarks = self.detector.detect(pil_image, landmarks=True)
+        if boxes is None or len(boxes) == 0:
+            return None, None, None
+
+        if probabilities is not None:
+            mask = np.array([prob is not None and prob > 0 for prob in probabilities], dtype=bool)
+            boxes = boxes[mask]
+            if landmarks is not None:
+                landmarks = landmarks[mask]
+
+        if len(boxes) == 0:
+            return None, None, None
+
+        faces = self.detector.extract(pil_image, boxes, save_path=None)
         if faces is None:
-            return None
+            return None, None, None
+
+        if isinstance(faces, list):
+            valid_faces = [face for face in faces if face is not None]
+            if not valid_faces:
+                return None, None, None
+            faces = torch.stack(valid_faces)
 
         if faces.ndim == 3:
             faces = faces.unsqueeze(0)
-        return faces
+
+        count = min(faces.shape[0], len(boxes))
+        if count == 0:
+            return None, None, None
+
+        result_landmarks = None
+        if landmarks is not None:
+            result_landmarks = landmarks[:count].astype(np.float32)
+
+        return faces[:count], boxes[:count].astype(np.float32), result_landmarks
 
     def embedding(self, face_tensor: torch.Tensor) -> np.ndarray:
         with torch.no_grad():

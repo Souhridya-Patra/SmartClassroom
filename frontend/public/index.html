@@ -53,6 +53,7 @@
         <p class="helper">Capture multiple angles from live video. Only 512D embeddings are stored, never raw photos.</p>
         <div class="camera-wrap">
           <video id="liveVideo" autoplay playsinline muted></video>
+          <canvas id="overlayCanvas" class="overlay-canvas"></canvas>
           <canvas id="captureCanvas" width="640" height="480" hidden></canvas>
         </div>
         <div class="inline-actions">
@@ -95,6 +96,190 @@
           <li>Decision: similarity &gt; 0.60 is positive identity match.</li>
           <li>Storage policy: no student photos are persisted by this system.</li>
         </ul>
+      </article>
+    </section>
+
+    <!-- Faculty Management Section -->
+    <section class="management-grid">
+      <article class="card management-card">
+        <h2>Register Faculty (with Barcode & Face Capture)</h2>
+        <p class="helper">Register a new faculty member: enter ID/name, scan barcode, and capture face for enrollment.</p>
+        
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+          <div>
+            <h4 style="margin: 0 0 0.5rem 0;">Face Capture (Live Camera)</h4>
+            <video id="facultyRegisterVideo" autoplay playsinline muted style="width:100%; border-radius:8px; background:#000;"></video>
+            <canvas id="facultyRegisterCaptureCanvas" width="640" height="480" hidden></canvas>
+            <div class="inline-actions" style="margin-top: 0.5rem;">
+              <button id="startFacultyCamera" class="btn btn-accent" type="button">Start Camera</button>
+              <button id="stopFacultyCamera" class="btn btn-ghost" type="button">Stop Camera</button>
+              <button id="captureFacultyFace" class="btn btn-primary" type="button">Capture Face</button>
+            </div>
+            <div id="facePreview" style="margin-top: 0.5rem; text-align: center;">
+              <img id="capturedFacePreview" src="" style="max-width:100%; max-height:150px; display:none; border-radius:8px;" />
+              <p id="faceStatus" style="font-size:0.85rem; color:#666; margin:0.5rem 0 0 0;">No face captured yet</p>
+            </div>
+          </div>
+          
+          <div>
+            <form id="facultyRegisterForm" style="display:flex; flex-direction:column; gap:0.5rem;">
+              <div>
+                <label>Faculty ID</label>
+                <input id="facultyId" type="text" placeholder="FID-001" required />
+              </div>
+              
+              <div>
+                <label>Full Name</label>
+                <input id="facultyName" type="text" placeholder="Dr. John Smith" required />
+              </div>
+              
+              <div>
+                <label>Barcode (Scanner or Manual)</label>
+                <input id="facultyBarcode" type="text" placeholder="Scan barcode here" required autofocus />
+                <p style="font-size:0.85rem; color:#666; margin:0.25rem 0 0 0;">🔴 Place cursor here and scan with barcode device</p>
+              </div>
+              
+              <div style="background:#f0f0f0; padding:0.5rem; border-radius:4px; margin:0.5rem 0;">
+                <p style="margin:0; font-size:0.9rem; font-weight:bold;">Face Capture Status:</p>
+                <p id="faceEnrollStatus" style="margin:0.25rem 0 0 0; font-size:0.85rem; color:#999;">Waiting for capture...</p>
+              </div>
+              
+              <button class="btn btn-primary" type="submit" style="margin-top:0.5rem;">Register Faculty</button>
+            </form>
+          </div>
+        </div>
+        
+        <pre id="facultyRegisterOutput" class="payload"></pre>
+      </article>
+
+      <article class="card management-card">
+        <h2>Faculty Check-In (Image + Barcode)</h2>
+        <p class="helper">Faculty can check in by providing their ID, barcode, and a live photo for face verification.</p>
+        <div class="checkin-camera-wrap">
+          <video id="checkinVideo" autoplay playsinline muted style="width:100%; max-width:300px; border-radius:8px;"></video>
+          <canvas id="checkinCaptureCanvas" width="640" height="480" hidden></canvas>
+        </div>
+        <div class="inline-actions">
+          <button id="startCheckinCamera" class="btn btn-accent" type="button">Start Camera</button>
+          <button id="stopCheckinCamera" class="btn btn-ghost" type="button">Stop Camera</button>
+        </div>
+        <form id="facultyCheckinForm">
+          <label>Faculty ID</label>
+          <input id="checkinFacultyId" type="text" placeholder="FID-001" required />
+          <label>Barcode</label>
+          <input id="checkinBarcode" type="text" placeholder="Scan barcode" required />
+          <button class="btn btn-primary" type="submit">Check In (Capture Current Frame)</button>
+        </form>
+        <pre id="facultyCheckinOutput" class="payload"></pre>
+      </article>
+
+      <article class="card management-card">
+        <h2>Create Class</h2>
+        <p class="helper">Create a new class with name, section, and semester info.</p>
+        <form id="classCreateForm">
+          <label>Class ID</label>
+          <input id="classId" type="text" placeholder="CS101-A" required />
+          <label>Class Name</label>
+          <input id="className" type="text" placeholder="Data Structures" required />
+          <label>Section (optional)</label>
+          <input id="classSection" type="text" placeholder="A" />
+          <label>Semester (optional)</label>
+          <input id="classSemester" type="text" placeholder="Spring 2024" />
+          <button class="btn btn-primary" type="submit">Create Class</button>
+        </form>
+        <pre id="classCreateOutput" class="payload"></pre>
+      </article>
+
+      <article class="card management-card">
+        <h2>Enroll Students in Class</h2>
+        <p class="helper">Add students to a class. Enter one student ID per line.</p>
+        <form id="enrollStudentsForm">
+          <label>Class ID</label>
+          <input id="enrollClassId" type="text" placeholder="CS101-A" required />
+          <label>Student IDs (one per line)</label>
+          <textarea id="studentIdsList" placeholder="S001&#10;S002&#10;S003&#10;S004" style="min-height:120px;" required></textarea>
+          <button class="btn btn-primary" type="submit">Enroll Students</button>
+        </form>
+        <pre id="enrollStudentsOutput" class="payload"></pre>
+      </article>
+
+      <article class="card management-card">
+        <h2>Start Class Session</h2>
+        <p class="helper">Start a new attendance session. Faculty must verify with barcode + face.</p>
+        <form id="sessionStartForm">
+          <label>Class ID</label>
+          <input id="sessionStartClassId" type="text" placeholder="CS101-A" required />
+          <label>Faculty ID</label>
+          <input id="sessionStartFacultyId" type="text" placeholder="FID-001" required />
+          <label>Barcode</label>
+          <input id="sessionStartBarcode" type="text" placeholder="Scan barcode" required />
+          <label>Recognized Face ID</label>
+          <input id="sessionStartFaceId" type="text" placeholder="Face ID from recognition" required />
+          <button class="btn btn-primary" type="submit">Start Session</button>
+        </form>
+        <pre id="sessionStartOutput" class="payload"></pre>
+      </article>
+
+      <article class="card management-card">
+        <h2>End Class Session</h2>
+        <p class="helper">End attendance session and mark students present/absent based on recognitions during session.</p>
+        <form id="sessionEndForm">
+          <label>Session ID</label>
+          <input id="sessionEndId" type="number" placeholder="123" required />
+          <label>Faculty ID</label>
+          <input id="sessionEndFacultyId" type="text" placeholder="FID-001" required />
+          <label>Barcode</label>
+          <input id="sessionEndBarcode" type="text" placeholder="Scan barcode" required />
+          <label>Recognized Face ID</label>
+          <input id="sessionEndFaceId" type="text" placeholder="Face ID from recognition" required />
+          <button class="btn btn-primary" type="submit">End Session & Mark Attendance</button>
+        </form>
+        <pre id="sessionEndOutput" class="payload"></pre>
+      </article>
+
+      <article class="card management-card">
+        <h2>Session Attendance Report</h2>
+        <p class="helper">View attendance details for a specific session and download as report.</p>
+        <form id="reportForm">
+          <label>Session ID</label>
+          <input id="reportSessionId" type="number" placeholder="123" required />
+          <button class="btn btn-ghost" type="submit">Load Report</button>
+        </form>
+        <div id="reportContainer" style="margin-top: 1rem;"></div>
+        <button id="downloadReportBtn" class="btn btn-primary" type="button" style="display:none;">Download as CSV</button>
+        <pre id="reportOutput" class="payload"></pre>
+      </article>
+
+      <article class="card management-card">
+        <h2>Timetable Setup</h2>
+        <p class="helper">Create class schedule with periods and subjects. Auto-maps attendance to subject slots during sessions.</p>
+        <form id="timetableCreateForm">
+          <label>Class ID</label>
+          <input id="timetableClassId" type="text" placeholder="CS101-A" required />
+          <label>Semester</label>
+          <input id="timetableSemester" type="text" placeholder="Spring 2024" required />
+          
+          <fieldset style="border:1px solid #ccc; padding:1rem; margin:1rem 0; border-radius:4px;">
+            <legend style="font-weight:bold; padding:0 0.5rem;">Add Periods</legend>
+            <div id="periodsContainer"></div>
+            <button type="button" class="btn btn-ghost" id="addPeriodBtn">+ Add Period</button>
+          </fieldset>
+          
+          <button class="btn btn-primary" type="submit">Create Timetable</button>
+        </form>
+        <pre id="timetableCreateOutput" class="payload"></pre>
+      </article>
+
+      <article class="card management-card">
+        <h2>View Class Timetable</h2>
+        <p class="helper">View all schedules and subjects for a class, organized by day of week.</p>
+        <form id="timetableViewForm">
+          <label>Class ID</label>
+          <input id="timetableViewClassId" type="text" placeholder="CS101-A" required />
+          <button class="btn btn-ghost" type="submit">View Timetable</button>
+        </form>
+        <div id="timetableViewContainer" style="margin-top: 1rem;"></div>
+        <pre id="timetableViewOutput" class="payload"></pre>
       </article>
     </section>
 
