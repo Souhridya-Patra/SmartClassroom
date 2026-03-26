@@ -1,6 +1,7 @@
 import numpy as np
 import threading
 import time
+import uuid
 from typing import Sequence
 
 import requests
@@ -222,7 +223,6 @@ async def enroll_face(image: UploadFile = File(...)):
     embedding = model.embedding(faces[0])
     
     # Generate a unique face identity ID for faculty
-    import uuid
     face_identity_id = f"FACE-{uuid.uuid4().hex[:12].upper()}"
     
     # Store the face embedding with generated ID
@@ -236,19 +236,82 @@ async def enroll_face(image: UploadFile = File(...)):
     }
 
 
+@app.post("/enroll-face-batch")
+async def enroll_face_batch(
+    images: list[UploadFile] = File(...),
+    face_identity_id: str | None = None,
+):
+    """Enroll faculty face with multiple angles, same technique as student batch enrollment."""
+    if not images:
+        raise HTTPException(status_code=400, detail="at least one image is required")
+
+    model = _require_engine()
+    resolved_face_id = (face_identity_id or "").strip() or f"FACE-{uuid.uuid4().hex[:12].upper()}"
+
+    accepted = 0
+    rejected = 0
+    current_samples = store.get_samples(resolved_face_id)
+
+    for image in images:
+        raw = await image.read()
+        frame = decode_image_bytes(raw)
+        faces = model.detect_faces(frame)
+        if faces is None or len(faces) == 0:
+            rejected += 1
+            continue
+
+        embedding = model.embedding(faces[0])
+        current_samples = store.register(student_id=resolved_face_id, embedding=embedding)
+        accepted += 1
+
+    if accepted == 0:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "No usable face detected in captured images",
+                "processed": len(images),
+                "accepted": accepted,
+                "rejected": rejected,
+            },
+        )
+
+    return {
+        "face_identity_id": resolved_face_id,
+        "processed": len(images),
+        "accepted": accepted,
+        "rejected": rejected,
+        "samples": current_samples,
+        "message": "Faculty batch enrollment completed",
+        "status": "success",
+    }
+
+
 @app.post("/recognize", response_model=RecognizeResponse)
 async def recognize(
     image: UploadFile = File(...),
     threshold: float | None = None,
     forward: bool = False,
+    identity_prefix: str | None = None,
 ) -> RecognizeResponse:
     started = time.perf_counter()
     model = _require_engine()
     threshold_value = _choose_threshold(threshold)
 
     known = store.get_all()
+    if identity_prefix:
+        prefix = identity_prefix.strip()
+        if prefix:
+            known = {
+                student_id: vector
+                for student_id, vector in known.items()
+                if student_id.startswith(prefix)
+            }
+
     if not known:
-        raise HTTPException(status_code=409, detail="No registered students found")
+        detail = "No registered identities found"
+        if identity_prefix and identity_prefix.strip():
+            detail = f"No registered identities found for prefix '{identity_prefix.strip()}'"
+        raise HTTPException(status_code=409, detail=detail)
 
     raw = await image.read()
     frame = decode_image_bytes(raw)

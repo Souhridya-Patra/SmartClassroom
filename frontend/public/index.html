@@ -103,7 +103,7 @@
     <section class="management-grid">
       <article class="card management-card">
         <h2>Register Faculty (with Barcode & Face Capture)</h2>
-        <p class="helper">Register a new faculty member: enter ID/name, scan barcode, and capture face for enrollment.</p>
+        <p class="helper">Register a new faculty member: enter ID/name, scan barcode, and capture multiple face angles for enrollment.</p>
         
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
           <div>
@@ -142,6 +142,11 @@
               <div style="background:#f0f0f0; padding:0.5rem; border-radius:4px; margin:0.5rem 0;">
                 <p style="margin:0; font-size:0.9rem; font-weight:bold;">Face Capture Status:</p>
                 <p id="faceEnrollStatus" style="margin:0.25rem 0 0 0; font-size:0.85rem; color:#999;">Waiting for capture...</p>
+              </div>
+
+              <div>
+                <label>Face Frames / Angles</label>
+                <input id="facultyEnrollShots" type="number" min="3" max="12" step="1" value="5" required />
               </div>
               
               <button class="btn btn-primary" type="submit" style="margin-top:0.5rem;">Register Faculty</button>

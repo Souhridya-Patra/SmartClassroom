@@ -498,28 +498,151 @@ stopLiveRecognitionButton.addEventListener("click", () => {
 
 /* Faculty Management Handlers */
 
+// Faculty Registration with Face Capture
+let facultyRegisterVideoStream = null;
+let capturedFacultyFaceBlob = null;
+
+document.getElementById("startFacultyCamera").addEventListener("click", async () => {
+  try {
+    facultyRegisterVideoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+    document.getElementById("facultyRegisterVideo").srcObject = facultyRegisterVideoStream;
+    document.getElementById("faceStatus").textContent = "Camera active - click 'Capture Face' when ready";
+    document.getElementById("faceEnrollStatus").textContent = "📹 Camera is running...";
+  } catch (err) {
+    document.getElementById("faceStatus").textContent = `Camera error: ${err.message}`;
+    document.getElementById("faceEnrollStatus").textContent = `❌ Camera failed: ${err.message}`;
+  }
+});
+
+document.getElementById("stopFacultyCamera").addEventListener("click", () => {
+  if (facultyRegisterVideoStream) {
+    facultyRegisterVideoStream.getTracks().forEach(track => track.stop());
+    facultyRegisterVideoStream = null;
+    document.getElementById("facultyRegisterVideo").srcObject = null;
+  }
+  document.getElementById("faceStatus").textContent = "Camera stopped";
+  document.getElementById("faceEnrollStatus").textContent = "Camera stopped";
+});
+
+document.getElementById("captureFacultyFace").addEventListener("click", async () => {
+  if (!facultyRegisterVideoStream) {
+    alert("Please start the camera first");
+    return;
+  }
+
+  try {
+    const canvas = document.getElementById("facultyRegisterCaptureCanvas");
+    const video = document.getElementById("facultyRegisterVideo");
+    const shots = Number.parseInt(document.getElementById("facultyEnrollShots").value, 10);
+    if (Number.isNaN(shots) || shots < 3) {
+      throw new Error("Please choose at least 3 face frames");
+    }
+
+    const captureOne = () => new Promise((resolve, reject) => {
+      const ctx = canvas.getContext("2d");
+      canvas.width = video.videoWidth || 640;
+      canvas.height = video.videoHeight || 480;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          reject(new Error("Failed to capture frame"));
+          return;
+        }
+        resolve(blob);
+      }, "image/jpeg", 0.9);
+    });
+
+    const formData = new FormData();
+    let previewSet = false;
+
+    document.getElementById("faceStatus").textContent = "Capturing multiple angles...";
+    for (let index = 0; index < shots; index += 1) {
+      document.getElementById("faceEnrollStatus").textContent = `📸 Capturing angle ${index + 1}/${shots}. Slightly turn your head.`;
+      const blob = await captureOne();
+      capturedFacultyFaceBlob = blob;
+      formData.append("images", blob, `faculty-angle-${index + 1}.jpg`);
+
+      if (!previewSet) {
+        const previewUrl = URL.createObjectURL(blob);
+        const preview = document.getElementById("capturedFacePreview");
+        preview.src = previewUrl;
+        preview.style.display = "block";
+        previewSet = true;
+      }
+
+      await sleep(550);
+    }
+
+    document.getElementById("faceStatus").textContent = "Sending captured angles to AI for enrollment...";
+    document.getElementById("faceEnrollStatus").textContent = "📤 Enrolling faculty face...";
+
+    const res = await fetch("/api/ai/enroll-face-batch", {
+      method: "POST",
+      body: formData,
+    });
+
+    const result = await res.json();
+
+    if (res.ok && result.face_identity_id) {
+      window.enrolledFaceIdentityId = result.face_identity_id;
+      document.getElementById("faceStatus").textContent = `✅ Face enrolled! ID: ${result.face_identity_id}`;
+      document.getElementById("faceEnrollStatus").textContent = `✅ Accepted ${result.accepted}/${result.processed} angles`;
+    } else {
+      document.getElementById("faceStatus").textContent = `⚠️ Enrollment failed: ${result.message || "Unknown error"}`;
+      document.getElementById("faceEnrollStatus").textContent = `❌ ${result.message || "Enrollment failed"}`;
+    }
+  } catch (err) {
+    document.getElementById("faceStatus").textContent = `Capture error: ${err.message}`;
+    document.getElementById("faceEnrollStatus").textContent = `❌ Capture failed`;
+  }
+});
+
 document.getElementById("facultyRegisterForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   const output = document.getElementById("facultyRegisterOutput");
+
+  // Check if face was captured
+  if (!window.enrolledFaceIdentityId) {
+    output.textContent = "Error: Please capture and enroll face first!";
+    return;
+  }
+
   try {
     const payload = {
       faculty_id: document.getElementById("facultyId").value.trim(),
       full_name: document.getElementById("facultyName").value.trim(),
       barcode_value: document.getElementById("facultyBarcode").value.trim(),
-      face_identity_id: document.getElementById("facultyFaceId").value.trim(),
+      face_identity_id: window.enrolledFaceIdentityId,
     };
+
     const res = await fetch("/api/backend/faculty/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
+
     const result = await res.json();
     output.textContent = pretty(result);
+
     if (res.ok) {
+      // Reset form and captured data
       e.target.reset();
+      capturedFacultyFaceBlob = null;
+      window.enrolledFaceIdentityId = null;
+      document.getElementById("capturedFacePreview").style.display = "none";
+      document.getElementById("faceStatus").textContent = "Face registered successfully!";
+      document.getElementById("faceEnrollStatus").textContent = "✅ Ready for next registration";
+      
+      // Stop camera on success
+      if (facultyRegisterVideoStream) {
+        facultyRegisterVideoStream.getTracks().forEach(track => track.stop());
+        facultyRegisterVideoStream = null;
+        document.getElementById("facultyRegisterVideo").srcObject = null;
+      }
     }
   } catch (error) {
     output.textContent = `Error: ${error.message || error}`;
+    document.getElementById("faceEnrollStatus").textContent = `❌ Registration failed`;
   }
 });
 
@@ -765,3 +888,161 @@ document.getElementById("downloadReportBtn").addEventListener("click", () => {
   await loadHealth();
   await loadAttendance();
 })();
+
+/* Timetable Management Handlers */
+
+const timetableCreateForm = document.getElementById("timetableCreateForm");
+const timetableViewForm = document.getElementById("timetableViewForm");
+const periodsContainer = document.getElementById("periodsContainer");
+const addPeriodBtn = document.getElementById("addPeriodBtn");
+
+let periodCount = 0;
+
+function createPeriodInput() {
+  if (!periodsContainer) {
+    return;
+  }
+
+  periodCount += 1;
+  const container = document.createElement("div");
+  container.className = "period-input";
+  container.style.cssText = "margin-bottom: 1rem; padding: 1rem; background: #f5f5f5; border-radius: 4px;";
+  container.innerHTML = `
+    <div style="margin-bottom: 0.5rem;">
+      <h4 style="margin: 0 0 0.5rem 0;">Period ${periodCount}</h4>
+    </div>
+    <label>Day of Week</label>
+    <select class="period-day" required>
+      <option value="">-- Select Day --</option>
+      <option value="Monday">Monday</option>
+      <option value="Tuesday">Tuesday</option>
+      <option value="Wednesday">Wednesday</option>
+      <option value="Thursday">Thursday</option>
+      <option value="Friday">Friday</option>
+      <option value="Saturday">Saturday</option>
+      <option value="Sunday">Sunday</option>
+    </select>
+
+    <label>Period Number</label>
+    <input type="number" class="period-number" min="1" max="12" placeholder="1" required />
+
+    <label>Start Time</label>
+    <input type="time" class="period-start-time" value="09:00" required />
+
+    <label>End Time</label>
+    <input type="time" class="period-end-time" value="10:00" required />
+
+    <label>Subject Name</label>
+    <input type="text" class="period-subject" placeholder="Mathematics" required />
+
+    <button type="button" class="btn btn-ghost remove-period-btn" style="margin-top: 0.5rem;">Remove Period</button>
+  `;
+
+  const removeBtn = container.querySelector(".remove-period-btn");
+  if (removeBtn) {
+    removeBtn.addEventListener("click", () => container.remove());
+  }
+
+  periodsContainer.appendChild(container);
+}
+
+if (addPeriodBtn) {
+  addPeriodBtn.addEventListener("click", (event) => {
+    event.preventDefault();
+    createPeriodInput();
+  });
+
+  if (periodsContainer && periodsContainer.children.length === 0) {
+    createPeriodInput();
+  }
+}
+
+if (timetableCreateForm) {
+  timetableCreateForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const output = document.getElementById("timetableCreateOutput");
+
+    try {
+      const classId = document.getElementById("timetableClassId").value.trim();
+      const semester = document.getElementById("timetableSemester").value.trim();
+      const periodInputs = document.querySelectorAll(".period-input");
+
+      const periods = Array.from(periodInputs).map((periodEl) => ({
+        day_of_week: periodEl.querySelector(".period-day").value,
+        period_number: Number.parseInt(periodEl.querySelector(".period-number").value, 10),
+        start_time: periodEl.querySelector(".period-start-time").value,
+        end_time: periodEl.querySelector(".period-end-time").value,
+        subject_name: periodEl.querySelector(".period-subject").value,
+      }));
+
+      const res = await fetch("/api/backend/timetable", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ class_id: classId, semester, periods }),
+      });
+
+      const result = await res.json();
+      if (output) {
+        output.textContent = pretty(result);
+      }
+
+      if (res.ok) {
+        timetableCreateForm.reset();
+        periodCount = 0;
+        if (periodsContainer) {
+          periodsContainer.innerHTML = "";
+          createPeriodInput();
+        }
+      }
+    } catch (error) {
+      if (output) {
+        output.textContent = `Error: ${error.message || error}`;
+      }
+    }
+  });
+}
+
+if (timetableViewForm) {
+  timetableViewForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const classId = document.getElementById("timetableViewClassId").value.trim();
+    const container = document.getElementById("timetableViewContainer");
+    const output = document.getElementById("timetableViewOutput");
+
+    try {
+      const res = await fetch(`/api/backend/classes/${classId}/timetable`);
+      const result = await res.json();
+
+      if (output) {
+        output.textContent = pretty(result);
+      }
+
+      if (res.ok && container) {
+        const timetable = result.timetable || {};
+        const days = Object.keys(timetable);
+
+        let html = "<div style='margin-top: 1rem;'>";
+        days.sort().forEach((day) => {
+          html += `<h4 style='margin-top: 1rem; margin-bottom: 0.5rem;'>${day}</h4>`;
+          html += "<table style='width: 100%; border-collapse: collapse; font-size: 0.9rem;'>";
+          html += "<tr style='background: #f0f0f0;'><th style='padding: 0.5rem; text-align: left; border: 1px solid #ddd;'>Period</th><th style='padding: 0.5rem; text-align: left; border: 1px solid #ddd;'>Time</th><th style='padding: 0.5rem; text-align: left; border: 1px solid #ddd;'>Subject</th></tr>";
+
+          timetable[day].forEach((period) => {
+            html += `<tr><td style='padding: 0.5rem; border: 1px solid #ddd;'>${period.period_number}</td>`;
+            html += `<td style='padding: 0.5rem; border: 1px solid #ddd;'>${period.start_time} - ${period.end_time}</td>`;
+            html += `<td style='padding: 0.5rem; border: 1px solid #ddd;'>${period.subject_name || "N/A"}</td></tr>`;
+          });
+
+          html += "</table>";
+        });
+
+        html += "</div>";
+        container.innerHTML = html;
+      }
+    } catch (error) {
+      if (output) {
+        output.textContent = `Error: ${error.message || error}`;
+      }
+    }
+  });
+}

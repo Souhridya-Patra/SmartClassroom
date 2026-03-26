@@ -1,7 +1,7 @@
 services:
 
   db:
-    image: mysql:8
+    build: ./db
     container_name: smart_db
     restart: always
     env_file: .env
@@ -13,7 +13,7 @@ services:
       timeout: 5s
       retries: 10
     volumes:
-    - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - db_data:/var/lib/mysql
 
   backend-service:
     build: ./backend-service
@@ -63,3 +63,6 @@ services:
         condition: service_healthy
     ports:
       - "8080:80"
+
+volumes:
+  db_data:

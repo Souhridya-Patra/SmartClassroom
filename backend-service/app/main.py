@@ -372,6 +372,7 @@ async def faculty_checkin_with_image(
         recognition_response = requests.post(
             f"{ai_service_url}/recognize",
             files=files,
+            params={"identity_prefix": "FACE-"},
             timeout=30,
         )
         recognition_response.raise_for_status()
