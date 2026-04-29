@@ -1,12 +1,40 @@
 import os
+import time
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form
 from app.db.init_db import init
+from app.services.timetable_lookup import (
+    get_timetable_health,
+    list_timetable_rooms,
+    lookup_current_assignment,
+    lookup_current_assignment_by_room,
+    lookup_nearest_assignment_by_room,
+)
 from pydantic import BaseModel, Field
 import requests
 
 from app.db.session import get_connection
 
 app = FastAPI()
+
+
+def _post_ai_with_retry(url: str, *, files: dict, params: dict | None = None, attempts: int = 3) -> dict:
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            response = requests.post(
+                url,
+                files=files,
+                params=params,
+                timeout=(8, 75),
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt < attempts:
+                time.sleep(0.6 * attempt)
+
+    raise HTTPException(status_code=503, detail=f"AI service error after retries: {last_error}")
 
 
 class RecognitionItem(BaseModel):
@@ -75,6 +103,33 @@ class SessionEndRequest(BaseModel):
     recognized_face_id: str
 
 
+class RoomSessionStartResolvedRequest(BaseModel):
+    room_name: str
+    barcode_value: str
+    recognized_face_id: str
+
+
+class TimetableHealthResponse(BaseModel):
+    status: str
+    database: str | None = None
+
+class ClassSectionMapping(BaseModel):
+    smart_class_id: str
+    section_id: int
+
+
+class ClassSectionMappingCreateRequest(BaseModel):
+    smart_class_id: str
+    section_id: int
+
+
+class TimetableSection(BaseModel):
+    id: int
+    name: str
+    sem_number: int | None = None
+    dept_name: str | None = None
+
+
 def _verify_faculty(
     cursor,
     faculty_id: str,
@@ -97,6 +152,73 @@ def _verify_faculty(
     face_ok = faculty["face_identity_id"] == recognized_face_id
     return barcode_ok, face_ok, faculty
 
+
+def _normalize_name(value: str | None) -> str:
+    return " ".join((value or "").strip().lower().split())
+
+
+def _resolve_verified_faculty(
+    cursor,
+    barcode_value: str,
+    recognized_face_id: str,
+    expected_faculty_name: str | None = None,
+) -> dict:
+    cursor.execute(
+        """
+        SELECT faculty_id, full_name, barcode_value, face_identity_id
+        FROM faculty
+        WHERE barcode_value = %s AND face_identity_id = %s
+        LIMIT 1
+        """,
+        (barcode_value, recognized_face_id),
+    )
+    faculty = cursor.fetchone()
+    if not faculty:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "message": "Faculty verification failed",
+                "barcode_verified": False,
+                "face_verified": False,
+            },
+        )
+
+    if expected_faculty_name:
+        expected = _normalize_name(expected_faculty_name)
+        actual = _normalize_name(faculty.get("full_name"))
+        if expected and actual and expected != actual:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "message": "Verified faculty does not match timetable-assigned faculty",
+                    "expected_faculty_name": expected_faculty_name,
+                    "verified_faculty_name": faculty.get("full_name"),
+                },
+            )
+
+    return faculty
+
+
+def _recognize_faculty_face_from_image(image_data: bytes) -> tuple[str, dict]:
+    ai_service_url = os.getenv("AI_SERVICE_URL", "http://ai-service:8000")
+    files = {"image": ("image.jpg", image_data, "image/jpeg")}
+    recognition_result = _post_ai_with_retry(
+        f"{ai_service_url}/recognize",
+        files=files,
+        params={"identity_prefix": "FACE-"},
+    )
+
+    matches = recognition_result.get("matches", [])
+    if not matches:
+        raise HTTPException(status_code=422, detail="No face detected in image")
+
+    best_match = max(matches, key=lambda m: m.get("similarity", 0))
+    recognized_face_id = best_match.get("student_id")
+    if not recognized_face_id:
+        raise HTTPException(status_code=422, detail="No faculty face identity matched")
+
+    return recognized_face_id, best_match
+
 @app.on_event("startup")
 def startup():
     init()
@@ -110,6 +232,167 @@ def db_health():
     conn = get_connection()
     conn.close()
     return {"status": "DB connected"}
+
+
+@app.get("/timetable/health", response_model=TimetableHealthResponse)
+def timetable_health():
+    try:
+        return get_timetable_health()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Timetable DB unavailable: {exc}")
+
+
+@app.get("/timetable/rooms")
+def timetable_rooms():
+    try:
+        return {"rooms": list_timetable_rooms()}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Unable to fetch timetable rooms: {exc}")
+
+
+@app.get("/timetable/context")
+def timetable_context(room_name: str):
+    room_name = room_name.strip()
+    if not room_name:
+        raise HTTPException(status_code=400, detail="room_name is required")
+
+    try:
+        assignment = lookup_current_assignment_by_room(room_name)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Unable to fetch timetable context: {exc}")
+
+    if not assignment:
+        nearest_assignment = None
+        try:
+            nearest_assignment = lookup_nearest_assignment_by_room(room_name)
+        except Exception:
+            nearest_assignment = None
+
+        if nearest_assignment:
+            return {
+                "room_name": room_name,
+                "has_active_timetable": False,
+                "message": "No active timetable entry right now. Showing nearest slot for today.",
+                "class_id": nearest_assignment.get("smart_class_id"),
+                "subject_name": nearest_assignment.get("subject_name"),
+                "teacher_name": nearest_assignment.get("teacher_name"),
+                "section_name": nearest_assignment.get("section_name"),
+                "slot_label": nearest_assignment.get("slot_label"),
+                "slot_number": nearest_assignment.get("slot_number"),
+                "slot_start_time": str(nearest_assignment.get("start_time")),
+                "slot_end_time": str(nearest_assignment.get("end_time")),
+                "day_of_week": nearest_assignment.get("matched_day_of_week"),
+                "matched_time": nearest_assignment.get("matched_time"),
+                "mapping_id": nearest_assignment.get("mapping_id"),
+                "suggested_context_only": True,
+            }
+
+        return {
+            "room_name": room_name,
+            "has_active_timetable": False,
+            "message": "No active timetable entry for this room at current day/time",
+        }
+
+    return {
+        "room_name": room_name,
+        "has_active_timetable": True,
+        "class_id": assignment.get("smart_class_id"),
+        "subject_name": assignment.get("subject_name"),
+        "teacher_name": assignment.get("teacher_name"),
+        "section_name": assignment.get("section_name"),
+        "slot_label": assignment.get("slot_label"),
+        "slot_number": assignment.get("slot_number"),
+        "day_of_week": assignment.get("matched_day_of_week"),
+        "matched_time": assignment.get("matched_time"),
+        "mapping_id": assignment.get("mapping_id"),
+    }
+
+
+@app.get("/timetable/sections", response_model=list[TimetableSection])
+def list_timetable_sections():
+    """List all available sections from timetable database for mapping to smart_classroom classes."""
+    import mysql.connector
+    try:
+        conn = mysql.connector.connect(
+            host=os.getenv("TIMETABLE_DB_HOST", os.getenv("DB_HOST", "localhost")),
+            port=int(os.getenv("TIMETABLE_DB_PORT", os.getenv("DB_PORT", "3306"))),
+            user=os.getenv("TIMETABLE_DB_USER", os.getenv("DB_USER", "root")),
+            password=os.getenv("TIMETABLE_DB_PASSWORD", os.getenv("DB_PASSWORD", "")),
+            database=os.getenv("TIMETABLE_DB_NAME", os.getenv("DB_NAME", "timetable_db")),
+        )
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT s.id, s.name, sm.sem_number, d.name as dept_name
+            FROM sections s
+            LEFT JOIN semesters sm ON s.sem_id = sm.id
+            LEFT JOIN departments d ON sm.dept_id = d.id
+            ORDER BY s.name
+        """)
+        sections = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return sections or []
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Unable to fetch timetable sections: {exc}")
+
+
+@app.get("/timetable/class-section-mappings", response_model=list[ClassSectionMapping])
+def list_class_section_mappings():
+    """List all existing class-to-section mappings that link smart_classroom classes to timetable sections."""
+    import mysql.connector
+    try:
+        conn = mysql.connector.connect(
+            host=os.getenv("TIMETABLE_DB_HOST", os.getenv("DB_HOST", "localhost")),
+            port=int(os.getenv("TIMETABLE_DB_PORT", os.getenv("DB_PORT", "3306"))),
+            user=os.getenv("TIMETABLE_DB_USER", os.getenv("DB_USER", "root")),
+            password=os.getenv("TIMETABLE_DB_PASSWORD", os.getenv("DB_PASSWORD", "")),
+            database=os.getenv("TIMETABLE_DB_NAME", os.getenv("DB_NAME", "timetable_db")),
+        )
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT smart_class_id, section_id
+            FROM smartclassroom_class_section_map
+            WHERE is_active = 1
+            ORDER BY smart_class_id
+        """)
+        mappings = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return mappings or []
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Unable to fetch class-section mappings: {exc}")
+
+
+@app.post("/timetable/class-section-mappings")
+def create_class_section_mapping(payload: ClassSectionMappingCreateRequest):
+    """Create or update a mapping from a smart_classroom class to a timetable section."""
+    import mysql.connector
+    try:
+        conn = mysql.connector.connect(
+            host=os.getenv("TIMETABLE_DB_HOST", os.getenv("DB_HOST", "localhost")),
+            port=int(os.getenv("TIMETABLE_DB_PORT", os.getenv("DB_PORT", "3306"))),
+            user=os.getenv("TIMETABLE_DB_USER", os.getenv("DB_USER", "root")),
+            password=os.getenv("TIMETABLE_DB_PASSWORD", os.getenv("DB_PASSWORD", "")),
+            database=os.getenv("TIMETABLE_DB_NAME", os.getenv("DB_NAME", "timetable_db")),
+        )
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO smartclassroom_class_section_map (smart_class_id, section_id, is_active)
+            VALUES (%s, %s, 1)
+            ON DUPLICATE KEY UPDATE is_active = 1, updated_at = NOW()
+        """, (payload.smart_class_id.strip(), payload.section_id))
+        conn.commit()
+        affected = cursor.rowcount
+        cursor.close()
+        conn.close()
+        
+        return {
+            "status": "created" if affected == 1 else "updated",
+            "smart_class_id": payload.smart_class_id,
+            "section_id": payload.section_id,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Unable to create mapping: {exc}")
 
 
 @app.post("/attendance/recognition")
@@ -369,19 +652,13 @@ async def faculty_checkin_with_image(
     try:
         image_data = await image.read()
         files = {"image": ("image.jpg", image_data, "image/jpeg")}
-        recognition_response = requests.post(
+        recognition_result = _post_ai_with_retry(
             f"{ai_service_url}/recognize",
             files=files,
             params={"identity_prefix": "FACE-"},
-            timeout=30,
         )
-        recognition_response.raise_for_status()
-        recognition_result = recognition_response.json()
-    except requests.RequestException as e:
-        raise HTTPException(
-            status_code=503,
-            detail=f"AI service error: {str(e)}",
-        )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=400,
@@ -531,8 +808,9 @@ def start_session(payload: SessionStartRequest):
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
 
-    cursor.execute("SELECT class_id FROM classes WHERE class_id = %s", (payload.class_id.strip(),))
-    if not cursor.fetchone():
+    cursor.execute("SELECT class_id, class_name, section, semester FROM classes WHERE class_id = %s", (payload.class_id.strip(),))
+    class_row = cursor.fetchone()
+    if not class_row:
         cursor.close()
         conn.close()
         raise HTTPException(status_code=404, detail=f"Class {payload.class_id} not found")
@@ -574,46 +852,48 @@ def start_session(payload: SessionStartRequest):
             detail=f"Class {payload.class_id} already has active session {active['session_id']}",
         )
 
-    # AUTO-MAPPING: Find matching timetable period for current day/time
-    from datetime import datetime
-    current_time = datetime.now().strftime("%H:%M:%S")
-    current_day = datetime.now().strftime("%A")  # e.g., "Monday"
+    schedule_match = None
+    try:
+        schedule_match = lookup_current_assignment(class_row)
+    except Exception:
+        schedule_match = None
 
-    period_id = None
-    timetable_schedule_id = None
-    matched_subject = None
-
-    cursor.execute(
-        """
-        SELECT t.schedule_id, sp.period_id, sp.subject_name
-        FROM timetable t
-        LEFT JOIN subject_periods sp ON t.schedule_id = sp.timetable_id
-        WHERE t.class_id = %s
-          AND t.day_of_week = %s
-          AND %s >= t.start_time AND %s <= t.end_time
-        LIMIT 1
-        """,
-        (payload.class_id.strip(), current_day, current_time, current_time),
-    )
-    timetable_match = cursor.fetchone()
-    if timetable_match:
-        timetable_schedule_id = timetable_match["schedule_id"]
-        period_id = timetable_match["period_id"]
-        matched_subject = timetable_match["subject_name"]
+    schedule_mode = "manual" if not schedule_match else "matched"
+    timetable_schedule_id = schedule_match["timetable_id"] if schedule_match else None
+    timetable_section_id = schedule_match["section_id"] if schedule_match else None
+    timetable_slot_id = schedule_match["slot_id"] if schedule_match else None
+    timetable_room_name = schedule_match["room_name"] if schedule_match else None
+    timetable_subject_name = schedule_match["subject_name"] if schedule_match else None
+    timetable_teacher_name = schedule_match["teacher_name"] if schedule_match else None
 
     cursor.execute(
         """
         INSERT INTO class_sessions (
             class_id,
             faculty_id,
-            period_id,
             timetable_schedule_id,
+            timetable_section_id,
+            timetable_slot_id,
+            timetable_room_name,
+            timetable_subject_name,
+            timetable_teacher_name,
+            schedule_mode,
             status,
             start_barcode_verified,
             start_face_verified
-        ) VALUES (%s, %s, %s, %s, 'active', 1, 1)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', 1, 1)
         """,
-        (payload.class_id.strip(), payload.faculty_id.strip(), period_id, timetable_schedule_id),
+        (
+            payload.class_id.strip(),
+            payload.faculty_id.strip(),
+            timetable_schedule_id,
+            timetable_section_id,
+            timetable_slot_id,
+            timetable_room_name,
+            timetable_subject_name,
+            timetable_teacher_name,
+            schedule_mode,
+        ),
     )
     session_id = cursor.lastrowid
     conn.commit()
@@ -626,16 +906,172 @@ def start_session(payload: SessionStartRequest):
         "faculty_id": payload.faculty_id.strip(),
         "status": "active",
         "message": "Session started after barcode + face verification",
-        "auto_mapped_period": {
-            "period_id": period_id,
-            "subject_name": matched_subject,
-            "timetable_schedule_id": timetable_schedule_id,
-        } if period_id else None,
+        "schedule_mode": schedule_mode,
+        "timetable_match": schedule_match,
     }
-    if matched_subject:
-        response["message"] += f" (Period: {matched_subject})"
 
     return response
+
+
+@app.post("/sessions/start-resolved")
+def start_session_resolved(payload: RoomSessionStartResolvedRequest):
+    room_name = payload.room_name.strip()
+    if not room_name:
+        raise HTTPException(status_code=400, detail="room_name is required")
+
+    assignment = lookup_current_assignment_by_room(room_name)
+    if not assignment:
+        raise HTTPException(
+            status_code=422,
+            detail="No active timetable entry found for this room at current day/time",
+        )
+
+    class_id = (assignment.get("smart_class_id") or "").strip()
+    if not class_id:
+        raise HTTPException(
+            status_code=422,
+            detail="No SmartClass class_id mapping found for scheduled section. Configure class-section mapping in scheduler.",
+        )
+
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+
+    faculty = _resolve_verified_faculty(
+        cursor,
+        payload.barcode_value.strip(),
+        payload.recognized_face_id.strip(),
+        assignment.get("teacher_name"),
+    )
+
+    cursor.execute(
+        """
+        INSERT INTO classes (class_id, class_name, section, semester)
+        VALUES (%s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            class_name = VALUES(class_name),
+            section = VALUES(section),
+            semester = VALUES(semester)
+        """,
+        (
+            class_id,
+            (assignment.get("subject_name") or f"Auto-{class_id}"),
+            assignment.get("section_name"),
+            str(assignment.get("sem_number")) if assignment.get("sem_number") is not None else None,
+        ),
+    )
+
+    cursor.execute(
+        """
+        SELECT session_id
+        FROM class_sessions
+        WHERE class_id = %s AND status = 'active'
+        ORDER BY session_id DESC
+        LIMIT 1
+        """,
+        (class_id,),
+    )
+    active = cursor.fetchone()
+    if active:
+        cursor.close()
+        conn.close()
+        raise HTTPException(
+            status_code=409,
+            detail=f"Class {class_id} already has active session {active['session_id']}",
+        )
+
+    cursor.execute(
+        """
+        INSERT INTO class_sessions (
+            class_id,
+            faculty_id,
+            timetable_schedule_id,
+            timetable_section_id,
+            timetable_slot_id,
+            timetable_room_name,
+            timetable_subject_name,
+            timetable_teacher_name,
+            schedule_mode,
+            status,
+            start_barcode_verified,
+            start_face_verified
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', 1, 1)
+        """,
+        (
+            class_id,
+            faculty["faculty_id"],
+            assignment.get("timetable_id"),
+            assignment.get("section_id"),
+            assignment.get("slot_id"),
+            assignment.get("room_name"),
+            assignment.get("subject_name"),
+            assignment.get("teacher_name"),
+            "auto-room",
+        ),
+    )
+    session_id = cursor.lastrowid
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    return {
+        "session_id": session_id,
+        "class_id": class_id,
+        "faculty_id": faculty["faculty_id"],
+        "status": "active",
+        "message": "Autonomous session started (room + timetable + barcode + face verification)",
+        "schedule_mode": "auto-room",
+        "timetable_match": assignment,
+    }
+
+
+@app.post("/sessions/start-with-image")
+async def start_session_with_image(
+    class_id: str = Form(...),
+    faculty_id: str = Form(...),
+    barcode_value: str = Form(...),
+    image: UploadFile = File(...),
+):
+    image_data = await image.read()
+    recognized_face_id, best_match = _recognize_faculty_face_from_image(image_data)
+
+    result = start_session(
+        SessionStartRequest(
+            class_id=class_id,
+            faculty_id=faculty_id,
+            barcode_value=barcode_value,
+            recognized_face_id=recognized_face_id,
+        )
+    )
+    result["recognized_face_id"] = recognized_face_id
+    result["recognition_details"] = {
+        "similarity": best_match.get("similarity"),
+        "confidence": best_match.get("confidence"),
+    }
+    return result
+
+
+@app.post("/sessions/start-resolved-with-image")
+async def start_session_resolved_with_image(
+    room_name: str = Form(...),
+    barcode_value: str = Form(...),
+    image: UploadFile = File(...),
+):
+    image_data = await image.read()
+    recognized_face_id, best_match = _recognize_faculty_face_from_image(image_data)
+
+    result = start_session_resolved(
+        RoomSessionStartResolvedRequest(
+            room_name=room_name,
+            barcode_value=barcode_value,
+            recognized_face_id=recognized_face_id,
+        )
+    )
+    result["recognized_face_id"] = recognized_face_id
+    result["recognition_details"] = {
+        "similarity": best_match.get("similarity"),
+        "confidence": best_match.get("confidence"),
+    }
+    return result
 
 
 @app.post("/sessions/{session_id}/end")
@@ -645,7 +1081,7 @@ def end_session(session_id: int, payload: SessionEndRequest):
 
     cursor.execute(
         """
-        SELECT session_id, class_id, faculty_id, start_time, status
+        SELECT session_id, class_id, faculty_id, start_time, status, timetable_room_name, timetable_subject_name, timetable_teacher_name, schedule_mode
         FROM class_sessions
         WHERE session_id = %s
         """,
@@ -779,6 +1215,81 @@ def end_session(session_id: int, payload: SessionEndRequest):
     }
 
 
+@app.post("/sessions/{session_id}/end-with-image")
+async def end_session_with_image(
+    session_id: int,
+    faculty_id: str = Form(...),
+    barcode_value: str = Form(...),
+    image: UploadFile = File(...),
+):
+    image_data = await image.read()
+    recognized_face_id, best_match = _recognize_faculty_face_from_image(image_data)
+
+    result = end_session(
+        session_id,
+        SessionEndRequest(
+            faculty_id=faculty_id,
+            barcode_value=barcode_value,
+            recognized_face_id=recognized_face_id,
+        ),
+    )
+    result["recognized_face_id"] = recognized_face_id
+    result["recognition_details"] = {
+        "similarity": best_match.get("similarity"),
+        "confidence": best_match.get("confidence"),
+    }
+    return result
+
+
+@app.post("/sessions/end-by-room-with-image")
+async def end_session_by_room_with_image(
+    room_name: str = Form(...),
+    barcode_value: str = Form(...),
+    image: UploadFile = File(...),
+):
+    room_name = room_name.strip()
+    if not room_name:
+        raise HTTPException(status_code=400, detail="room_name is required")
+
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        """
+        SELECT session_id, class_id, faculty_id, timetable_room_name
+        FROM class_sessions
+        WHERE status = 'active' AND timetable_room_name = %s
+        ORDER BY session_id DESC
+        LIMIT 1
+        """,
+        (room_name,),
+    )
+    active = cursor.fetchone()
+    cursor.close()
+    conn.close()
+
+    if not active:
+        raise HTTPException(status_code=404, detail=f"No active session found for room {room_name}")
+
+    image_data = await image.read()
+    recognized_face_id, best_match = _recognize_faculty_face_from_image(image_data)
+
+    result = end_session(
+        active["session_id"],
+        SessionEndRequest(
+            faculty_id=active["faculty_id"],
+            barcode_value=barcode_value,
+            recognized_face_id=recognized_face_id,
+        ),
+    )
+    result["recognized_face_id"] = recognized_face_id
+    result["recognition_details"] = {
+        "similarity": best_match.get("similarity"),
+        "confidence": best_match.get("confidence"),
+    }
+    result["room_name"] = room_name
+    return result
+
+
 @app.get("/sessions/{session_id}/attendance")
 def session_attendance(session_id: int):
     conn = get_connection()
@@ -786,7 +1297,7 @@ def session_attendance(session_id: int):
 
     cursor.execute(
         """
-        SELECT session_id, class_id, faculty_id, start_time, end_time, status
+        SELECT session_id, class_id, faculty_id, start_time, end_time, status, timetable_room_name, timetable_subject_name, timetable_teacher_name, schedule_mode
         FROM class_sessions
         WHERE session_id = %s
         """,

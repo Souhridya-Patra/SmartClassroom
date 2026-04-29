@@ -1,11 +1,13 @@
 const backendStatus = document.getElementById("backendStatus");
 const dbStatus = document.getElementById("dbStatus");
 const aiStatus = document.getElementById("aiStatus");
+const timetableStatus = document.getElementById("timetableStatus");
 const tuningStatus = document.getElementById("tuningStatus");
 
 const backendPayload = document.getElementById("backendPayload");
 const dbPayload = document.getElementById("dbPayload");
 const aiPayload = document.getElementById("aiPayload");
+const timetablePayload = document.getElementById("timetablePayload");
 const tuningPayload = document.getElementById("tuningPayload");
 
 const cameraEnrollForm = document.getElementById("cameraEnrollForm");
@@ -27,6 +29,38 @@ const attendanceRows = document.getElementById("attendanceRows");
 
 const refreshAllButton = document.getElementById("refreshAll");
 const refreshAttendanceButton = document.getElementById("refreshAttendance");
+const menuToggle = document.getElementById("menuToggle");
+const closeMenu = document.getElementById("closeMenu");
+const navDrawer = document.getElementById("navDrawer");
+const scrim = document.getElementById("scrim");
+
+function openMenu() {
+  navDrawer.classList.add("open");
+  scrim.hidden = false;
+}
+
+function closeMenuFn() {
+  navDrawer.classList.remove("open");
+  scrim.hidden = true;
+}
+
+menuToggle.addEventListener("click", openMenu);
+closeMenu.addEventListener("click", closeMenuFn);
+scrim.addEventListener("click", closeMenuFn);
+
+document.querySelectorAll(".nav-link").forEach((link) => {
+  link.addEventListener("click", (event) => {
+    const href = link.getAttribute("href") || "";
+    if (href.startsWith("#")) {
+      event.preventDefault();
+      const target = document.querySelector(href);
+      if (target) {
+        target.scrollIntoView({ behavior: "smooth" });
+      }
+    }
+    closeMenuFn();
+  });
+});
 
 let cameraStream = null;
 let recognitionTimer = null;
@@ -89,6 +123,15 @@ async function loadHealth() {
   } catch (error) {
     setStatus(aiStatus, false, "Offline");
     aiPayload.textContent = String(error.message || error);
+  }
+
+  try {
+    const timetable = await getJson("/api/backend/timetable/health");
+    setStatus(timetableStatus, true, "Connected");
+    timetablePayload.textContent = pretty(timetable);
+  } catch (error) {
+    setStatus(timetableStatus, false, "Unavailable");
+    timetablePayload.textContent = String(error.message || error);
   }
 
   try {
@@ -648,12 +691,56 @@ document.getElementById("facultyRegisterForm").addEventListener("submit", async 
 
 let checkinVideoStream = null;
 
+async function ensureCheckinCamera() {
+  if (checkinVideoStream) {
+    return;
+  }
+  checkinVideoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+  const video = document.getElementById("checkinVideo");
+  video.srcObject = checkinVideoStream;
+  await new Promise((resolve) => {
+    if (video.readyState >= 2) {
+      resolve();
+      return;
+    }
+    video.onloadedmetadata = () => resolve();
+  });
+  document.getElementById("startCheckinCamera").disabled = true;
+  document.getElementById("stopCheckinCamera").disabled = false;
+}
+
+function captureCheckinFrame() {
+  return new Promise((resolve, reject) => {
+    (async () => {
+      try {
+      await ensureCheckinCamera();
+      const video = document.getElementById("checkinVideo");
+      const canvas = document.getElementById("checkinCaptureCanvas");
+      if (!video || !canvas || !video.srcObject) {
+        reject(new Error("Unable to access Faculty Check-In camera."));
+        return;
+      }
+      const ctx = canvas.getContext("2d");
+      canvas.width = video.videoWidth || 640;
+      canvas.height = video.videoHeight || 480;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          reject(new Error("Could not capture camera frame"));
+          return;
+        }
+        resolve(blob);
+      }, "image/jpeg", 0.9);
+      } catch (error) {
+      reject(error);
+      }
+    })();
+  });
+}
+
 document.getElementById("startCheckinCamera").addEventListener("click", async () => {
   try {
-    checkinVideoStream = await navigator.mediaDevices.getUserMedia({ video: true });
-    document.getElementById("checkinVideo").srcObject = checkinVideoStream;
-    document.getElementById("startCheckinCamera").disabled = true;
-    document.getElementById("stopCheckinCamera").disabled = false;
+    await ensureCheckinCamera();
   } catch (error) {
     document.getElementById("facultyCheckinOutput").textContent = `Camera error: ${error.message}`;
   }
@@ -662,10 +749,72 @@ document.getElementById("startCheckinCamera").addEventListener("click", async ()
 document.getElementById("stopCheckinCamera").addEventListener("click", () => {
   if (checkinVideoStream) {
     checkinVideoStream.getTracks().forEach(track => track.stop());
-    document.getElementById("checkinVideo").srcObject = null;
+    checkinVideoStream = null;
   }
+  document.getElementById("checkinVideo").srcObject = null;
   document.getElementById("startCheckinCamera").disabled = false;
   document.getElementById("stopCheckinCamera").disabled = true;
+});
+
+async function loadSessionRoomOptions() {
+  const startSelect = document.getElementById("sessionRoomSelect");
+  const endSelect = document.getElementById("sessionEndRoomSelect");
+  if (!startSelect || !endSelect) {
+    return;
+  }
+
+  try {
+    const data = await getJson("/api/backend/timetable/rooms");
+    const rooms = Array.isArray(data.rooms) ? data.rooms : [];
+
+    const renderOptions = (select) => {
+      select.innerHTML = '<option value="">Select room</option>';
+      rooms.forEach((room) => {
+        const opt = document.createElement("option");
+        opt.value = room;
+        opt.textContent = room;
+        select.appendChild(opt);
+      });
+    };
+
+    renderOptions(startSelect);
+    renderOptions(endSelect);
+  } catch (error) {
+    const msg = `Unable to load timetable rooms: ${error.message || error}`;
+    const out = document.getElementById("sessionStartOutput");
+    if (out) {
+      out.textContent = msg;
+    }
+  }
+}
+
+async function refreshSessionContextForRoom(roomName) {
+  const classInput = document.getElementById("sessionResolvedClassId");
+  const facultyInput = document.getElementById("sessionResolvedFacultyName");
+  const subjectInput = document.getElementById("sessionResolvedSubject");
+  const out = document.getElementById("sessionStartOutput");
+
+  classInput.value = "";
+  facultyInput.value = "";
+  subjectInput.value = "";
+
+  if (!roomName) {
+    return;
+  }
+
+  try {
+    const data = await getJson(`/api/backend/timetable/context?room_name=${encodeURIComponent(roomName)}`);
+    classInput.value = data.class_id || "";
+    facultyInput.value = data.teacher_name || "";
+    subjectInput.value = data.subject_name || "";
+    out.textContent = pretty(data);
+  } catch (error) {
+    out.textContent = `Error loading timetable context: ${error.message || error}`;
+  }
+}
+
+document.getElementById("sessionRoomSelect")?.addEventListener("change", async (e) => {
+  await refreshSessionContextForRoom(e.target.value);
 });
 
 document.getElementById("facultyCheckinForm").addEventListener("submit", async (e) => {
@@ -758,18 +907,25 @@ document.getElementById("sessionStartForm").addEventListener("submit", async (e)
   e.preventDefault();
   const output = document.getElementById("sessionStartOutput");
   try {
-    const payload = {
-      class_id: document.getElementById("sessionStartClassId").value.trim(),
-      faculty_id: document.getElementById("sessionStartFacultyId").value.trim(),
-      barcode_value: document.getElementById("sessionStartBarcode").value.trim(),
-      recognized_face_id: document.getElementById("sessionStartFaceId").value.trim(),
-    };
-    const res = await fetch("/api/backend/sessions/start", {
+    const frameBlob = await captureCheckinFrame();
+    const roomName = document.getElementById("sessionRoomSelect").value.trim();
+    if (!roomName) {
+      throw new Error("Please select room");
+    }
+
+    const formData = new FormData();
+    formData.append("room_name", roomName);
+    formData.append("barcode_value", document.getElementById("sessionStartBarcode").value.trim());
+    formData.append("image", frameBlob, "session-start.jpg");
+
+    const res = await fetch("/api/backend/sessions/start-resolved-with-image", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: formData,
     });
     const result = await res.json();
+    if (result && result.recognized_face_id) {
+      document.getElementById("sessionStartFaceId").value = result.recognized_face_id;
+    }
     output.textContent = pretty(result);
     if (res.ok) {
       e.target.reset();
@@ -783,18 +939,25 @@ document.getElementById("sessionEndForm").addEventListener("submit", async (e) =
   e.preventDefault();
   const output = document.getElementById("sessionEndOutput");
   try {
-    const sessionId = Number.parseInt(document.getElementById("sessionEndId").value, 10);
-    const payload = {
-      faculty_id: document.getElementById("sessionEndFacultyId").value.trim(),
-      barcode_value: document.getElementById("sessionEndBarcode").value.trim(),
-      recognized_face_id: document.getElementById("sessionEndFaceId").value.trim(),
-    };
-    const res = await fetch(`/api/backend/sessions/${sessionId}/end`, {
+    const roomName = document.getElementById("sessionEndRoomSelect").value.trim();
+    if (!roomName) {
+      throw new Error("Please select room");
+    }
+
+    const frameBlob = await captureCheckinFrame();
+    const formData = new FormData();
+    formData.append("room_name", roomName);
+    formData.append("barcode_value", document.getElementById("sessionEndBarcode").value.trim());
+    formData.append("image", frameBlob, "session-end.jpg");
+
+    const res = await fetch(`/api/backend/sessions/end-by-room-with-image`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: formData,
     });
     const result = await res.json();
+    if (result && result.recognized_face_id) {
+      document.getElementById("sessionEndFaceId").value = result.recognized_face_id;
+    }
     output.textContent = pretty(result);
     if (res.ok) {
       e.target.reset();
@@ -886,163 +1049,6 @@ document.getElementById("downloadReportBtn").addEventListener("click", () => {
 
 (async function init() {
   await loadHealth();
+  await loadSessionRoomOptions();
   await loadAttendance();
 })();
-
-/* Timetable Management Handlers */
-
-const timetableCreateForm = document.getElementById("timetableCreateForm");
-const timetableViewForm = document.getElementById("timetableViewForm");
-const periodsContainer = document.getElementById("periodsContainer");
-const addPeriodBtn = document.getElementById("addPeriodBtn");
-
-let periodCount = 0;
-
-function createPeriodInput() {
-  if (!periodsContainer) {
-    return;
-  }
-
-  periodCount += 1;
-  const container = document.createElement("div");
-  container.className = "period-input";
-  container.style.cssText = "margin-bottom: 1rem; padding: 1rem; background: #f5f5f5; border-radius: 4px;";
-  container.innerHTML = `
-    <div style="margin-bottom: 0.5rem;">
-      <h4 style="margin: 0 0 0.5rem 0;">Period ${periodCount}</h4>
-    </div>
-    <label>Day of Week</label>
-    <select class="period-day" required>
-      <option value="">-- Select Day --</option>
-      <option value="Monday">Monday</option>
-      <option value="Tuesday">Tuesday</option>
-      <option value="Wednesday">Wednesday</option>
-      <option value="Thursday">Thursday</option>
-      <option value="Friday">Friday</option>
-      <option value="Saturday">Saturday</option>
-      <option value="Sunday">Sunday</option>
-    </select>
-
-    <label>Period Number</label>
-    <input type="number" class="period-number" min="1" max="12" placeholder="1" required />
-
-    <label>Start Time</label>
-    <input type="time" class="period-start-time" value="09:00" required />
-
-    <label>End Time</label>
-    <input type="time" class="period-end-time" value="10:00" required />
-
-    <label>Subject Name</label>
-    <input type="text" class="period-subject" placeholder="Mathematics" required />
-
-    <button type="button" class="btn btn-ghost remove-period-btn" style="margin-top: 0.5rem;">Remove Period</button>
-  `;
-
-  const removeBtn = container.querySelector(".remove-period-btn");
-  if (removeBtn) {
-    removeBtn.addEventListener("click", () => container.remove());
-  }
-
-  periodsContainer.appendChild(container);
-}
-
-if (addPeriodBtn) {
-  addPeriodBtn.addEventListener("click", (event) => {
-    event.preventDefault();
-    createPeriodInput();
-  });
-
-  if (periodsContainer && periodsContainer.children.length === 0) {
-    createPeriodInput();
-  }
-}
-
-if (timetableCreateForm) {
-  timetableCreateForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const output = document.getElementById("timetableCreateOutput");
-
-    try {
-      const classId = document.getElementById("timetableClassId").value.trim();
-      const semester = document.getElementById("timetableSemester").value.trim();
-      const periodInputs = document.querySelectorAll(".period-input");
-
-      const periods = Array.from(periodInputs).map((periodEl) => ({
-        day_of_week: periodEl.querySelector(".period-day").value,
-        period_number: Number.parseInt(periodEl.querySelector(".period-number").value, 10),
-        start_time: periodEl.querySelector(".period-start-time").value,
-        end_time: periodEl.querySelector(".period-end-time").value,
-        subject_name: periodEl.querySelector(".period-subject").value,
-      }));
-
-      const res = await fetch("/api/backend/timetable", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ class_id: classId, semester, periods }),
-      });
-
-      const result = await res.json();
-      if (output) {
-        output.textContent = pretty(result);
-      }
-
-      if (res.ok) {
-        timetableCreateForm.reset();
-        periodCount = 0;
-        if (periodsContainer) {
-          periodsContainer.innerHTML = "";
-          createPeriodInput();
-        }
-      }
-    } catch (error) {
-      if (output) {
-        output.textContent = `Error: ${error.message || error}`;
-      }
-    }
-  });
-}
-
-if (timetableViewForm) {
-  timetableViewForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const classId = document.getElementById("timetableViewClassId").value.trim();
-    const container = document.getElementById("timetableViewContainer");
-    const output = document.getElementById("timetableViewOutput");
-
-    try {
-      const res = await fetch(`/api/backend/classes/${classId}/timetable`);
-      const result = await res.json();
-
-      if (output) {
-        output.textContent = pretty(result);
-      }
-
-      if (res.ok && container) {
-        const timetable = result.timetable || {};
-        const days = Object.keys(timetable);
-
-        let html = "<div style='margin-top: 1rem;'>";
-        days.sort().forEach((day) => {
-          html += `<h4 style='margin-top: 1rem; margin-bottom: 0.5rem;'>${day}</h4>`;
-          html += "<table style='width: 100%; border-collapse: collapse; font-size: 0.9rem;'>";
-          html += "<tr style='background: #f0f0f0;'><th style='padding: 0.5rem; text-align: left; border: 1px solid #ddd;'>Period</th><th style='padding: 0.5rem; text-align: left; border: 1px solid #ddd;'>Time</th><th style='padding: 0.5rem; text-align: left; border: 1px solid #ddd;'>Subject</th></tr>";
-
-          timetable[day].forEach((period) => {
-            html += `<tr><td style='padding: 0.5rem; border: 1px solid #ddd;'>${period.period_number}</td>`;
-            html += `<td style='padding: 0.5rem; border: 1px solid #ddd;'>${period.start_time} - ${period.end_time}</td>`;
-            html += `<td style='padding: 0.5rem; border: 1px solid #ddd;'>${period.subject_name || "N/A"}</td></tr>`;
-          });
-
-          html += "</table>";
-        });
-
-        html += "</div>";
-        container.innerHTML = html;
-      }
-    } catch (error) {
-      if (output) {
-        output.textContent = `Error: ${error.message || error}`;
-      }
-    }
-  });
-}

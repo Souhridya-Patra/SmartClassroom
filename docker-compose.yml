@@ -38,20 +38,32 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     env_file: .env
+    environment:
+      TORCH_DEVICE: ${TORCH_DEVICE:-cpu}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
       interval: 10s
       timeout: 5s
       retries: 10
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     ports:
       - "8002:8000"
+
+  timetable-service:
+    build: ./timetable_scheduler
+    container_name: timetable_service
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file: .env
+    ports:
+      - "8501:8501"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   frontend:
     build: ./frontend
@@ -60,6 +72,8 @@ services:
       backend-service:
         condition: service_healthy
       ai-service:
+        condition: service_healthy
+      timetable-service:
         condition: service_healthy
     ports:
       - "8080:80"

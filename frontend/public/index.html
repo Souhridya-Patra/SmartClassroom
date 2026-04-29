@@ -13,6 +13,21 @@
   <div class="bg-shape bg-shape-a"></div>
   <div class="bg-shape bg-shape-b"></div>
 
+  <button id="menuToggle" class="hamburger" aria-label="Toggle menu">☰</button>
+  <nav id="navDrawer" class="nav-drawer" aria-label="Primary">
+    <div class="nav-head">
+      <span>SmartClassroom</span>
+      <button id="closeMenu" class="close-btn" aria-label="Close menu">×</button>
+    </div>
+    <ul>
+      <li><a href="#liveStatus" class="nav-link">Live Status</a></li>
+      <li><a href="#cameraSection" class="nav-link">Camera & AI</a></li>
+      <li><a href="#facultySection" class="nav-link">Faculty</a></li>
+      <li><a href="#telemetry" class="nav-link">Attendance Telemetry</a></li>
+    </ul>
+  </nav>
+  <div id="scrim" class="scrim" hidden></div>
+
   <main class="app-shell">
     <header class="hero">
       <p class="eyebrow">SmartClassroom</p>
@@ -21,7 +36,7 @@
       <button id="refreshAll" class="btn btn-primary">Refresh Live Status</button>
     </header>
 
-    <section class="health-grid">
+    <section class="health-grid" id="liveStatus">
       <article class="card health-card">
         <h2>Backend</h2>
         <p id="backendStatus" class="status-pill status-loading">Loading</p>
@@ -41,13 +56,19 @@
       </article>
 
       <article class="card health-card">
+        <h2>Timetable Service</h2>
+        <p id="timetableStatus" class="status-pill status-loading">Loading</p>
+        <pre id="timetablePayload" class="payload"></pre>
+      </article>
+
+      <article class="card health-card">
         <h2>Recommended Thresholds</h2>
         <p id="tuningStatus" class="status-pill status-loading">Loading</p>
         <pre id="tuningPayload" class="payload"></pre>
       </article>
     </section>
 
-    <section class="actions-grid">
+    <section class="actions-grid" id="cameraSection">
       <article class="card action-card">
         <h2>Camera Enrollment (Metadata Only)</h2>
         <p class="helper">Capture multiple angles from live video. Only 512D embeddings are stored, never raw photos.</p>
@@ -100,7 +121,7 @@
     </section>
 
     <!-- Faculty Management Section -->
-    <section class="management-grid">
+    <section class="management-grid" id="facultySection">
       <article class="card management-card">
         <h2>Register Faculty (with Barcode & Face Capture)</h2>
         <p class="helper">Register a new faculty member: enter ID/name, scan barcode, and capture multiple face angles for enrollment.</p>
@@ -210,34 +231,40 @@
 
       <article class="card management-card">
         <h2>Start Class Session</h2>
-        <p class="helper">Start a new attendance session. Faculty must verify with barcode + face.</p>
+        <p class="helper">Autonomous flow: select room, system fetches current class/faculty from timetable, then faculty scans barcode and face to start.</p>
         <form id="sessionStartForm">
-          <label>Class ID</label>
-          <input id="sessionStartClassId" type="text" placeholder="CS101-A" required />
-          <label>Faculty ID</label>
-          <input id="sessionStartFacultyId" type="text" placeholder="FID-001" required />
+          <label>Room</label>
+          <select id="sessionRoomSelect" required>
+            <option value="">Select room</option>
+          </select>
+          <label>Resolved Class ID</label>
+          <input id="sessionResolvedClassId" type="text" placeholder="Auto from timetable" readonly />
+          <label>Resolved Faculty</label>
+          <input id="sessionResolvedFacultyName" type="text" placeholder="Auto from timetable" readonly />
+          <label>Resolved Subject</label>
+          <input id="sessionResolvedSubject" type="text" placeholder="Auto from timetable" readonly />
           <label>Barcode</label>
           <input id="sessionStartBarcode" type="text" placeholder="Scan barcode" required />
           <label>Recognized Face ID</label>
-          <input id="sessionStartFaceId" type="text" placeholder="Face ID from recognition" required />
-          <button class="btn btn-primary" type="submit">Start Session</button>
+          <input id="sessionStartFaceId" type="text" placeholder="Auto-filled after face recognition" readonly />
+          <button class="btn btn-primary" type="submit">Start Session (Barcode + Face Verify)</button>
         </form>
         <pre id="sessionStartOutput" class="payload"></pre>
       </article>
 
       <article class="card management-card">
         <h2>End Class Session</h2>
-        <p class="helper">End attendance session and mark students present/absent based on recognitions during session.</p>
+        <p class="helper">End active session for the selected room using barcode + face verification of the same faculty.</p>
         <form id="sessionEndForm">
-          <label>Session ID</label>
-          <input id="sessionEndId" type="number" placeholder="123" required />
-          <label>Faculty ID</label>
-          <input id="sessionEndFacultyId" type="text" placeholder="FID-001" required />
+          <label>Room</label>
+          <select id="sessionEndRoomSelect" required>
+            <option value="">Select room</option>
+          </select>
           <label>Barcode</label>
           <input id="sessionEndBarcode" type="text" placeholder="Scan barcode" required />
           <label>Recognized Face ID</label>
-          <input id="sessionEndFaceId" type="text" placeholder="Face ID from recognition" required />
-          <button class="btn btn-primary" type="submit">End Session & Mark Attendance</button>
+          <input id="sessionEndFaceId" type="text" placeholder="Auto-filled after face recognition" readonly />
+          <button class="btn btn-primary" type="submit">End Session & Mark Attendance (Verify Face)</button>
         </form>
         <pre id="sessionEndOutput" class="payload"></pre>
       </article>
@@ -256,39 +283,14 @@
       </article>
 
       <article class="card management-card">
-        <h2>Timetable Setup</h2>
-        <p class="helper">Create class schedule with periods and subjects. Auto-maps attendance to subject slots during sessions.</p>
-        <form id="timetableCreateForm">
-          <label>Class ID</label>
-          <input id="timetableClassId" type="text" placeholder="CS101-A" required />
-          <label>Semester</label>
-          <input id="timetableSemester" type="text" placeholder="Spring 2024" required />
-          
-          <fieldset style="border:1px solid #ccc; padding:1rem; margin:1rem 0; border-radius:4px;">
-            <legend style="font-weight:bold; padding:0 0.5rem;">Add Periods</legend>
-            <div id="periodsContainer"></div>
-            <button type="button" class="btn btn-ghost" id="addPeriodBtn">+ Add Period</button>
-          </fieldset>
-          
-          <button class="btn btn-primary" type="submit">Create Timetable</button>
-        </form>
-        <pre id="timetableCreateOutput" class="payload"></pre>
+        <h2>Timetable Scheduler</h2>
+        <p class="helper">Manage rooms, sections, subjects, slots, and generated timetables in the separate scheduler service.</p>
+        <a class="btn btn-primary" href="http://localhost:8501" target="_blank" rel="noreferrer">Open Scheduler</a>
       </article>
 
-      <article class="card management-card">
-        <h2>View Class Timetable</h2>
-        <p class="helper">View all schedules and subjects for a class, organized by day of week.</p>
-        <form id="timetableViewForm">
-          <label>Class ID</label>
-          <input id="timetableViewClassId" type="text" placeholder="CS101-A" required />
-          <button class="btn btn-ghost" type="submit">View Timetable</button>
-        </form>
-        <div id="timetableViewContainer" style="margin-top: 1rem;"></div>
-        <pre id="timetableViewOutput" class="payload"></pre>
-      </article>
     </section>
 
-    <section class="card telemetry-card">
+    <section class="card telemetry-card" id="telemetry">
       <div class="telemetry-head">
         <h2>Attendance Telemetry</h2>
         <button id="refreshAttendance" class="btn btn-ghost">Refresh Events</button>

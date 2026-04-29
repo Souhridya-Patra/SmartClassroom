@@ -266,17 +266,8 @@ Backend Verification:
 - Now faculty face was enrolled during registration (no separate face enrollment step)
 - Cleaner flow: Register once → Check-in multiple times
 
-### Timetable/Period Support (Works Together)
-- Faculty registers with face
-- Faculty starts session (barcode + face verified)
-- Session auto-maps to timetable period
-- Attendance tracked by period + subject
-- Enhanced reporting capabilities
-
 ### Attendance System
-- Period-based attendance (from timetable integration)
 - Verified by face (from registration)
-- Organized by subject (from timetable)
 
 ---
 

@@ -46,6 +46,14 @@ engine_error: str | None = None
 _engine_lock = threading.Lock()
 
 
+def _warmup_engine() -> None:
+    global engine_error
+    try:
+        _ensure_engine()
+    except Exception as exc:
+        engine_error = str(exc)
+
+
 def _ensure_engine() -> FaceEngine:
     global engine, engine_error
     if engine is not None:
@@ -71,6 +79,7 @@ def startup() -> None:
     # Keep startup non-blocking so /health can respond even when model download is slow.
     global engine_error
     engine_error = None
+    threading.Thread(target=_warmup_engine, daemon=True).start()
 
 
 def _require_engine() -> FaceEngine:
