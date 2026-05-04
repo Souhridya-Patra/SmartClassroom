@@ -29,10 +29,34 @@ const attendanceRows = document.getElementById("attendanceRows");
 
 const refreshAllButton = document.getElementById("refreshAll");
 const refreshAttendanceButton = document.getElementById("refreshAttendance");
+const openSchedulerHeroLink = document.getElementById("openSchedulerHeroLink");
+const openSchedulerSectionLink = document.getElementById("openSchedulerSectionLink");
 const menuToggle = document.getElementById("menuToggle");
 const closeMenu = document.getElementById("closeMenu");
 const navDrawer = document.getElementById("navDrawer");
 const scrim = document.getElementById("scrim");
+
+function getSchedulerLiveUrl() {
+  const configured = (window.SCHEDULER_LIVE_URL || "").trim();
+  if (configured) {
+    return configured;
+  }
+  const protocol = window.location.protocol;
+  const host = window.location.hostname;
+  return `${protocol}//${host}:8501`;
+}
+
+function wireSchedulerLinks() {
+  const schedulerUrl = getSchedulerLiveUrl();
+  [openSchedulerHeroLink, openSchedulerSectionLink].forEach((link) => {
+    if (!link) {
+      return;
+    }
+    link.href = schedulerUrl;
+    link.target = "_blank";
+    link.rel = "noreferrer noopener";
+  });
+}
 
 function openMenu() {
   navDrawer.classList.add("open");
@@ -1048,6 +1072,7 @@ document.getElementById("downloadReportBtn").addEventListener("click", () => {
 });
 
 (async function init() {
+  wireSchedulerLinks();
   await loadHealth();
   await loadSessionRoomOptions();
   await loadAttendance();

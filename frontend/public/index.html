@@ -33,7 +33,10 @@
       <p class="eyebrow">SmartClassroom</p>
       <h1>Control Deck</h1>
       <p class="subhead">Live service health, student enrollment, classroom recognition, and attendance telemetry from one panel.</p>
-      <button id="refreshAll" class="btn btn-primary">Refresh Live Status</button>
+      <div class="inline-actions">
+        <button id="refreshAll" class="btn btn-primary">Refresh Live Status</button>
+        <a id="openSchedulerHeroLink" class="btn btn-accent" href="http://localhost:8501" target="_blank" rel="noreferrer">Open Timetable Scheduler</a>
+      </div>
     </header>
 
     <section class="health-grid" id="liveStatus">
@@ -285,7 +288,7 @@
       <article class="card management-card">
         <h2>Timetable Scheduler</h2>
         <p class="helper">Manage rooms, sections, subjects, slots, and generated timetables in the separate scheduler service.</p>
-        <a class="btn btn-primary" href="http://localhost:8501" target="_blank" rel="noreferrer">Open Scheduler</a>
+        <a id="openSchedulerSectionLink" class="btn btn-primary" href="http://localhost:8501" target="_blank" rel="noreferrer">Open Scheduler</a>
       </article>
 
     </section>
