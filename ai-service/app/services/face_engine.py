@@ -13,6 +13,7 @@ class FaceEngine:
         self.device = torch.device(device_name)
         self.detector = MTCNN(keep_all=True, device=self.device)
         self.encoder = InceptionResnetV1(pretrained="vggface2").eval().to(self.device)
+        self.threshold = 0.9
 
     def detect_faces(self, bgr_image: np.ndarray) -> torch.Tensor | None:
         faces, _, _ = self.detect_faces_with_boxes(bgr_image)
@@ -26,14 +27,14 @@ class FaceEngine:
         if boxes is None or len(boxes) == 0:
             return None, None, None
 
-        if probabilities is not None:
-            mask = np.array([prob is not None and prob > 0 for prob in probabilities], dtype=bool)
-            boxes = boxes[mask]
-            if landmarks is not None:
-                landmarks = landmarks[mask]
-
-        if len(boxes) == 0:
+        valid_indices = [i for i, prob in enumerate(probabilities) if prob is not None and prob >= self.threshold]
+        
+        if not valid_indices:
             return None, None, None
+        
+        boxes = boxes[valid_indices]
+        if landmarks is not None:
+            landmarks = landmarks[valid_indices]
 
         faces = self.detector.extract(pil_image, boxes, save_path=None)
         if faces is None:
@@ -60,7 +61,13 @@ class FaceEngine:
 
     def embedding(self, face_tensor: torch.Tensor) -> np.ndarray:
         with torch.no_grad():
-            tensor = face_tensor.unsqueeze(0).to(self.device)
+            if face_tensor.ndim == 3:
+                tensor = face_tensor.unsqueeze(0).to(self.device)
+            elif face_tensor.ndim == 4:
+                tensor = face_tensor.to(self.device)
+            else:
+                raise ValueError(f"Unexpected tensor shape: {face_tensor.shape}. Expected a 3D or 4D tensor.")
+            
             vector = self.encoder(tensor).squeeze(0).detach().cpu().numpy().astype(np.float32)
 
         norm = float(np.linalg.norm(vector))
