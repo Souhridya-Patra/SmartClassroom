@@ -156,7 +156,7 @@ SmartClassroom/
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/your-org/SmartClassroom.git
+git clone https://github.com/Souhridya-Patra/SmartClassroom.git
 cd SmartClassroom
 ```
 
